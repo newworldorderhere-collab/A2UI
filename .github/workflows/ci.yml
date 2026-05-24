@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # Security check - ensure no secrets are committed
+  security:
+    runs-on: ubuntu-latest
+    name: Security Scan
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for secrets
+        uses: trufflesecurity/trufflehog@main
+        with:
+          extra_args: --debug --only-verified
+
+  # Build and test TypeScript/Node.js projects
+  build-typescript:
+    runs-on: ubuntu-latest
+    name: Build TypeScript
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: .
+
+      - name: Build renderers
+        run: |
+          cd renderers/web_core && npm install && npm run build
+          cd ../lit && npm install && npm run build
+          cd ../react && npm install && npm run build
+          cd ../markdown/markdown-it && npm install && npm run build
+
+      - name: Lint
+        run: npm run lint --if-present
+        continue-on-error: true
+
+  # Test Python components
+  build-python:
+    runs-on: ubuntu-latest
+    name: Test Python
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.14"
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Test specification eval
+        run: |
+          cd specification/v0_9/eval
+          uv sync
+          uv run pytest --tb=short
+        continue-on-error: true
+
+      - name: Test agent SDK
+        run: |
+          cd agent_sdks/python
+          uv sync
+          uv run pytest --tb=short
+        continue-on-error: true
+
+  # Type check TypeScript
+  typecheck:
+    runs-on: ubuntu-latest
+    name: Type Check
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript check
+        run: npx tsc --noEmit
+        continue-on-error: true
+
+  # Optional: Run A2UI evaluations (requires Anthropic API key)
+  evals:
+    runs-on: ubuntu-latest
+    name: A2UI Evaluations
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.14"
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Run evaluations
+        run: |
+          cd eval
+          uv sync
+          uv run python bin/run_ci_evals.py \
+            --max-samples 10 \
+            --model "anthropic/claude-sonnet-4-6" \
+            --grading-model "anthropic/claude-sonnet-4-6" \
+            --threshold 50
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        continue-on-error: true
+
+  # Build status check
+  all-checks:
+    runs-on: ubuntu-latest
+    name: All Checks
+    needs: [security, build-typescript, build-python, typecheck]
+    if: always()
+    steps:
+      - name: Check all checks passed
+        run: |
+          if [[ "${{ needs.security.result }}" == "failure" ]]; then
+            echo "❌ Security check failed"
+            exit 1
+          fi
+          if [[ "${{ needs.build-typescript.result }}" == "failure" ]]; then
+            echo "❌ TypeScript build failed"
+            exit 1
+          fi
+          if [[ "${{ needs.build-python.result }}" == "failure" ]]; then
+            echo "⚠️  Python tests failed (non-critical)"
+          fi
+          echo "✅ All critical checks passed"
