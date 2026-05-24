@@ -2,7 +2,11 @@ node_modules
 .DS_Store
 .wireit
 dist
+# Environment variables - DO NOT COMMIT API KEYS
 .env
+.env.local
+.env.*.local
+.env.*.private
 .idx
 .idea/
 *.pyc
